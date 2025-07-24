@@ -1,0 +1,319 @@
+=== PRODUCTION DEVICE CONFIGURATION: hpe-aruba single ===
+
+! ===== SECTION: Basic Device Configuration =====
+
+hostname BRANCH-GW01
+
+user admin password plaintext STRONG_AdminP@ssw0rd role admin
+user guest password plaintext GUEST_Read0nly role operator
+user noc password plaintext NOC_Supp0rt! role network-operator
+
+ssh server enable
+ssh server vrf default
+ssh server ciphers aes256-ctr aes192-ctr aes128-ctr
+ssh server macs hmac-sha2-256 hmac-sha2-512
+
+ntp server 192.0.2.10 iburst
+ntp server 192.0.2.11 iburst
+ntp enable
+ntp vrf default
+
+clock timezone UTC
+
+dns domain company.com
+dns server 8.8.8.8
+dns server 8.8.4.4
+
+logging enable
+logging host 10.10.10.50 vrf default
+logging facility local7
+logging severity informational
+logging trap informational
+
+service password-encryption
+
+banner motd ^ 
+Unauthorized access to this device is prohibited.
+All activity is monitored and logged.
+^
+
+ip name-server 8.8.8.8
+ip name-server 8.8.4.4
+
+ip domain-name branch.company.com
+
+! ===== END SECTION =====
+
+! ===== SECTION: Security Hardening =====
+
+aaa authentication login default local
+aaa authentication enable default local
+aaa authentication ssh login default local
+aaa authorization commands default local
+
+password policy min-length 12
+password policy complexity enable
+password policy history 5
+password policy lockout 5
+password policy lockout-time 15
+
+ip ssh idle-timeout 600
+ip ssh authentication-retries 3
+
+ip ssh version 2
+ip ssh key-exchange diffie-hellman-group14-sha1
+
+ip access-list extended ACL_MGMT_ONLY
+    10 permit tcp 10.10.10.0 0.0.0.255 any eq 22
+    20 permit tcp 10.10.10.0 0.0.0.255 any eq 443
+    30 deny ip any any log
+exit
+
+ip access-list extended ACL_GUEST_INTERNET
+    10 permit ip 192.168.100.0 0.0.0.255 any
+    20 deny ip any any log
+
+ip access-list extended ACL_LAN_PROTECT
+    10 permit ip 192.168.1.0 0.0.0.255 any
+
+ip access-list extended ACL_VPN_ONLY
+    10 permit ip 192.168.1.0 0.0.0.255 10.1.0.0 0.0.255.255
+
+interface mgmt
+   ip access-group ACL_MGMT_ONLY in
+
+interface vlan 100
+   ip access-group ACL_GUEST_INTERNET in
+
+interface vlan 10
+   ip access-group ACL_LAN_PROTECT in
+
+ip arp inspection vlan 10,100
+ip dhcp snooping vlan 10,100
+ip dhcp snooping enable
+
+spanning-tree bpdu-guard enable
+spanning-tree portfast bpdu-guard default
+
+ip source-interface logging vlan 10
+
+! ===== END SECTION =====
+
+! ===== SECTION: Interface Configuration =====
+
+vlan 10
+   name "LAN"
+   no shutdown
+
+vlan 100
+   name "GUEST"
+
+interface vlan 10
+   ip address 192.168.1.1/24
+
+interface vlan 100
+   ip address 192.168.100.1/24
+   no shutdown
+
+interface 1/1/1
+   description "Uplink to ISP"
+   no shutdown
+
+interface 1/1/2
+   description "LAN Core Switch"
+   vlan access 10
+   spanning-tree portfast
+   no shutdown
+
+interface 1/1/3
+   description "Guest WiFi AP"
+   vlan access 100
+   spanning-tree portfast
+   no shutdown
+
+interface 1/1/4
+   description "Management Console"
+   vlan access 10
+   spanning-tree portfast
+   no shutdown
+
+interface lag 1
+   description "Uplink LAG to Core"
+   no shutdown
+
+interface 1/1/5
+   description "LAG Member"
+   lag 1
+   no shutdown
+
+interface 1/1/6
+   description "LAG Member"
+   no shutdown
+
+interface lag 1
+   vlan trunk native 10 allowed 10,100
+   spanning-tree portfast disable
+
+spanning-tree mode mstp
+spanning-tree priority 4096
+
+! ===== END SECTION =====
+
+! ===== SECTION: Routing & Switching =====
+
+ip routing
+
+ip route 0.0.0.0/0 203.0.113.1
+
+ip route 10.1.0.0/16 192.168.1.254
+
+router ospf 1
+   router-id 192.168.1.1
+   network 192.168.1.0/24 area 0.0.0.0
+   passive-interface vlan 100
+
+ip ospf authentication message-digest
+interface vlan 10
+   ip ospf message-digest-key 1 md5 OSPFKey123
+
+interface vlan 100
+   ip ospf passive
+
+! ===== Site-to-Site VPN (IPSec) =====
+crypto ikev2 proposal HQ_PROPOSAL
+   encryption aes256
+   integrity sha256
+   group 14
+
+crypto ikev2 policy HQ_POLICY
+   proposal HQ_PROPOSAL
+
+crypto ikev2 keyring HQ_KEYRING
+   peer HQ_PEER
+      address vpn.hq.company.com
+      pre-shared-key plaintext HQ_SharedKey!
+
+crypto ikev2 profile HQ_PROFILE
+   match identity remote address vpn.hq.company.com
+   keyring HQ_KEYRING
+   dpd 10 3
+
+crypto ipsec transform-set HQ_TRANSFORM
+   esp-aes-256
+   esp-sha256-hmac
+
+crypto ipsec profile HQ_IPSEC_PROFILE
+   set transform-set HQ_TRANSFORM
+
+interface tunnel 1
+   ip address 10.255.255.2/30
+   tunnel source 203.0.113.2
+   tunnel destination vpn.hq.company.com
+   tunnel mode ipsec ipv4
+   tunnel protection ipsec profile HQ_IPSEC_PROFILE
+   no shutdown
+
+ip route 10.1.0.0/16 10.255.255.1
+
+! ===== END SECTION =====
+
+! ===== SECTION: Monitoring & Management =====
+
+snmp-server community readonly ROstring123
+snmp-server community readwrite RWstring123
+snmp-server contact "NOC <noc@company.com>"
+snmp-server location "Branch Office 1"
+snmp-server enable traps
+
+snmp-server host 10.10.10.50 version 2c ROstring123
+
+
+event log severity informational
+event log size 10000
+
+monitor session 1 source interface 1/1/2
+monitor session 1 destination interface 1/1/7
+
+ip flow monitor FLOW_MONITOR
+   record netflow ipv4 original-input
+   exporter FLOW_EXPORTER
+
+ip flow exporter FLOW_EXPORTER
+   destination 10.10.10.50
+   source vlan 10
+   transport udp 2055
+
+   interface vlan 10
+   interface vlan 100
+
+! ===== END SECTION =====
+
+! ===== SECTION: Production Readiness =====
+
+! Web Content Filtering (URL Filtering)
+web-filter enable
+web-filter policy default
+   block category adult
+   block category gambling
+   block category malware
+   block category phishing
+   block category proxy
+   allow category business
+   allow category education
+
+web-filter policy default apply vlan 100
+web-filter policy default apply vlan 10
+
+! Intrusion Prevention System (IPS)
+ips enable
+ips policy BRANCH_IPS
+   default-action drop
+   signature-category malware action drop
+   signature-category dos action drop
+   signature-category exploit action drop
+   signature-category botnet action drop
+
+ips policy BRANCH_IPS apply vlan 10
+ips policy BRANCH_IPS apply vlan 100
+
+! Application Control
+app-control enable
+app-control policy BRANCH_APPCTRL
+   block application bittorrent
+   block application tor
+   block application ultrasurf
+   allow application office365
+   allow application zoom
+
+app-control policy BRANCH_APPCTRL apply vlan 10
+app-control policy BRANCH_APPCTRL apply vlan 100
+
+! Bandwidth Management
+qos policy GUEST_LIMIT
+   class ip 192.168.100.0/24 bandwidth 10Mbit
+
+qos policy LAN_LIMIT
+   class ip 192.168.1.0/24 bandwidth 100Mbit
+
+interface vlan 100
+   service-policy input GUEST_LIMIT
+
+interface vlan 10
+   service-policy input LAN_LIMIT
+
+! Guest Network Isolation
+ip access-list extended ACL_GUEST_ISOLATION
+   10 deny ip 192.168.100.0 0.0.0.255 192.168.1.0 0.0.0.255
+   20 permit ip 192.168.100.0 0.0.0.255 any
+
+interface vlan 100
+   ip access-group ACL_GUEST_ISOLATION in
+
+! Backup Configuration
+copy running-config tftp://10.10.10.50/BRANCH-GW01-backup.cfg
+
+write memory
+
+! ===== END SECTION =====
+
+=== END OF CONFIGURATION ===
